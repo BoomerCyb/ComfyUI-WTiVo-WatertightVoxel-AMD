@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+.venv/
+python_env/
+*.pdb
+*.log
+
+.build/
+__pycache__/
+*.pyc
+*.pyd
+*.dll
+*.whl

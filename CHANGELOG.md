@@ -1,5 +1,10 @@
 # Changelog
 
+## AMD HIP port
+
+Added native Windows HIP GPU build support and source builds for the CPU modules. Fixed owned Eigen vertex returns and the empty graph result arity. Validated on RX 9070 XT at 2048 resolution. See AMD_PORT.md for the tested scope.
+
+
 All notable changes to the WTiVo (WatertightVoxel Optimizer) ComfyUI node will be documented in this file.
 
 ## [1.2.0] - 2026-09-19

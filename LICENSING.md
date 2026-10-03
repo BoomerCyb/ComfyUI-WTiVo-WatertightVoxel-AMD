@@ -36,7 +36,7 @@ Do **not** assume this open-source build can be embedded into a closed-source pr
 
 ## CUDA / NVIDIA
 
-WTiVo source does not bundle the NVIDIA CUDA Toolkit, driver, or PyTorch binaries. The Windows installer directs users to/install-from the official providers. Those external components remain governed by their own terms. The source repository itself is not a redistribution of CUDA.
+WTiVo source does not bundle the NVIDIA CUDA Toolkit, driver, or PyTorch binaries. The legacy source references describe the original NVIDIA build. This AMD branch uses the existing ROCm environment and manual native build instructions in AMD_PORT.md. Those external components remain governed by their own terms. The source repository itself is not a redistribution of CUDA.
 
 ## Authoritative upstream references
 

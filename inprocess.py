@@ -117,7 +117,7 @@ def process_arrays(
         if process.returncode != 0:
             raise RuntimeError(
                 f"WTiVo subprocess crashed with exit code {process.returncode}. "
-                "Check the console above for C++ or CUDA errors."
+                "Check the console above for native backend or GPU runtime errors."
             )
             
         # Parse the final stats from the captured stdout

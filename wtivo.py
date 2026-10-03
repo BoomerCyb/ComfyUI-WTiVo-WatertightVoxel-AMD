@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import ctypes
 import os
 import gc
@@ -50,22 +51,30 @@ for _p in (
 
 # Windows DLL lookup.
 # WTiVo ships its own third-party native runtime DLLs in build/.
-# PyTorch/CUDA DLLs come from the user's ComfyUI installation.
+# PyTorch GPU runtime DLLs come from the user's ComfyUI installation.
 # No dependency on any CelloCut/Conda environment.
 _DLL_HANDLES = []
 if os.name == "nt" and hasattr(os, "add_dll_directory"):
     py = Path(sys.executable).resolve().parent
-    torch_lib = py / "Lib" / "site-packages" / "torch" / "lib"
+    torch_spec = importlib.util.find_spec("torch")
+    torch_lib = (Path(torch_spec.origin).parent / "lib"
+                 if torch_spec and torch_spec.origin else
+                 py / "Lib" / "site-packages" / "torch" / "lib")
     candidates = [
         ROOT / "build",
         py,
         torch_lib,
         ROOT / ".deps" / "vcpkg" / "installed" / "x64-windows" / "bin",
     ]
-    for key in ("CUDA_PATH", "CUDA_HOME"):
+    for key in ("HIP_PATH", "ROCM_PATH", "ROCM_HOME", "CUDA_PATH", "CUDA_HOME"):
         value = os.environ.get(key)
         if value:
             candidates.append(Path(value) / "bin")
+    # TheRock SDK wheels can live outside the interpreter's directory.
+    for package in ("_rocm_sdk_core", "_rocm_sdk_devel"):
+        spec = importlib.util.find_spec(package)
+        if spec and spec.origin:
+            candidates.append(Path(spec.origin).parent / "bin")
     for d in candidates:
         try:
             if d.exists():
@@ -74,20 +83,30 @@ if os.name == "nt" and hasattr(os, "add_dll_directory"):
         except OSError:
             pass
 
+# Prefer installed packages; supply Trimesh locally when ComfyUI omits it.
+if (ROOT / "_vendor").exists():
+    sys.path.append(str(ROOT / "_vendor"))
+
 import numpy as np
 import torch
 import trimesh
 
-# Prefer a native WTiVo build when present.  This no-build package also ships
-# the already-working CelloCut Python-3.12/Windows-x64 binaries supplied by the
-# user.  The adapter below exposes WTiVo's small native API without importing
-# CelloCut.py or its ComfyUI node logic.
+# Use the native modules built for the active Python/ROCm environment.
 _BACKEND_NAME = "native-wtivo"
 try:
     import wtivo_core as core
     import wtivo_gpupr as gpupr
     import wtivo_vdb as vdb
 except (ImportError, OSError) as _wtivo_native_error:
+    if torch.version.hip is not None:
+        raise ImportError(
+            "WTiVo native HIP backend is unavailable. Build matching wtivo_core, "
+            "wtivo_gpupr and wtivo_vdb modules for this Python/ROCm environment. "
+            "The bundled CelloCut GPU binary requires NVIDIA CUDA and cannot be "
+            "used as a native ROCm fallback. Build scripts/build_gpupr_hip.py against the active ROCm interpreter; "
+            "see COMFYUI_ROCM_BUILD_GUIDE.md. Native import error: "
+            f"{_wtivo_native_error!r}"
+        ) from _wtivo_native_error
     try:
         import cppmodules as _legacy_cpp
         import cellocut_gpupr_fast as _legacy_gpupr
@@ -200,7 +219,7 @@ TOPO_UPLOAD_CHUNK = 262144  # 262k rows x 4 x int32 ~= 4 MiB host staging
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="WTiVo: WatertightVoxel Optimizer — sparse voxel proxy, tetra cell cut, CUDA graph optimization, and watertight FaithC-style finalization."
+        description="WTiVo: WatertightVoxel Optimizer â€” sparse voxel proxy, tetra cell cut, CUDA graph optimization, and watertight FaithC-style finalization."
     )
     p.add_argument("--input")
     p.add_argument("--output")
@@ -897,7 +916,7 @@ def main():
     if os.name != "nt":
         raise SystemExit("WTiVo 1.1 currently supports Windows 10/11 x64 only.")
     if not torch.cuda.is_available():
-        raise SystemExit("WTiVo requires an NVIDIA CUDA-capable GPU. Run Setup-Windows.cmd first.")
+        raise SystemExit("WTiVo requires a GPU visible to torch.cuda (HIP/ROCm or CUDA) and a matching native backend.")
 
     inp = None
     input_vertices_npy = input_faces_npy = None
@@ -928,7 +947,7 @@ def main():
         output_display = str(out)
 
     print("=======================================================")
-    print("  WTiVo 1.1 — WatertightVoxel Optimizer")
+    print("  WTiVo 1.1 â€” WatertightVoxel Optimizer")
     print("=======================================================")
     print(f"Input          : {input_display}")
     print(f"Output         : {output_display}")
@@ -972,7 +991,7 @@ def main():
     print("[WARNING] practical limit is only RAM/VRAM/runtime; very high final-res can create enormous meshes")
     print()
 
-    print(f"[TORCH] {torch.__version__} | CUDA {torch.version.cuda}")
+    print(f"[TORCH] {torch.__version__} | HIP {torch.version.hip} | CUDA {torch.version.cuda}")
     print(f"[GPU] {torch.cuda.get_device_name(0)}")
     print(f"[CORE] {getattr(core, '__file__', '<unknown>')}")
     print(f"[VDB] {getattr(vdb, '__file__', '<unknown>')}")
