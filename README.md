@@ -1,5 +1,7 @@
 # ComfyUI-WTiVo-WatertightVoxel-AMD
 
+> **First installation requires a build process.** The installer compiles native components using the Python, PyTorch, ROCm/HIP environment and AMD GPU architecture used by ComfyUI. This can take several minutes, especially when dependencies also need to be built. Downloading or extracting the repository alone does not complete installation. Run `install_requirements.bat`, or let ComfyUI-Easy-Install-AMD run it automatically, and wait for installation to finish successfully before restarting ComfyUI.
+
 ## AMD / ROCm
 
 The installer uses ComfyUI's Python and stops if setup fails. When installing through EZi, wait for the entire node group to complete before restarting.
