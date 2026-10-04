@@ -19,7 +19,7 @@ into this node's `.deps/vcpkg_installed` folder, then builds against that same f
 It uses a complete existing vcpkg checkout or downloads and bootstraps a local one.
 The first dependency build can take considerable time. The matching HIP SDK and
 Visual Studio C++ Build Tools/Windows SDK are still required.
-For prerequisites and manual commands, see [COMFYUI_ROCM_BUILD_GUIDE.md](COMFYUI_ROCM_BUILD_GUIDE.md).
+For prerequisites and manual commands, see [docs/AMD_BUILD.md](docs/AMD_BUILD.md).
 
 ComfyUI AMD installer: [BoomerCyb/ComfyUI-Easy-Install-AMD](https://github.com/BoomerCyb/ComfyUI-Easy-Install-AMD).
 
