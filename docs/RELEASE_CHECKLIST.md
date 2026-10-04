@@ -7,7 +7,7 @@ Before publishing a WTiVo source release:
 - [ ] Confirm `scripts/verify_install.py` passes.
 - [ ] Run one real mesh and confirm the final line reports the expected watertight status.
 - [ ] Do not commit `.venv/`, `.deps/`, `.build/`, `build/`, `.pyd`, `.dll`, `.obj`, `.lib`, or `.pdb` files.
-- [ ] Keep `LICENSE`, `NOTICE`, `LICENSING.md`, `THIRD_PARTY_NOTICES.md`, and `LICENSES/`.
+- [ ] Keep `LICENSE`, `NOTICE`, `LICENSING.md`, `THIRD_PARTY_NOTICES.md`, and the third-party sections of `LICENSE`.
 - [ ] Tag the commit (for example `v1.0.0`) only after the Windows build/run passes.
 - [ ] If publishing prebuilt dependency binaries in the future, include the exact generated `build/installed-licenses/` notices from that build and review binary redistribution terms.
 

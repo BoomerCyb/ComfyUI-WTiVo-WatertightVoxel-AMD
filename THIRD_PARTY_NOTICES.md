@@ -19,7 +19,7 @@ WTiVo does not vendor complete copies of the libraries below. `Setup-Windows.cmd
 
 ## License copies in this repository
 
-`LICENSES/` contains the full GPL/Apache/MPL and standard permissive license texts used by WTiVo's source/dependency map. For dependencies installed later (especially PyTorch and NumPy wheels), the license/notice files shipped by those exact installed packages are controlling and should be kept with any redistribution of those packages.
+The root `LICENSE` contains the full GPL/Apache/MPL and standard permissive license texts used by WTiVo's source/dependency map. For dependencies installed later (especially PyTorch and NumPy wheels), the license/notice files shipped by those exact installed packages are controlling and should be kept with any redistribution of those packages.
 
 ## Important CGAL consequence
 

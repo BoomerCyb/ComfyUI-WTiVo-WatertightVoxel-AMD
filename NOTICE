@@ -45,4 +45,4 @@ Trimesh — MIT.
 vcpkg — MIT; ports retain their upstream licenses.
 NVIDIA CUDA Toolkit/driver — external proprietary NVIDIA software; not bundled.
 
-See LICENSING.md, THIRD_PARTY_NOTICES.md and LICENSES/.
+See LICENSING.md, THIRD_PARTY_NOTICES.md and the third-party sections of LICENSE.
