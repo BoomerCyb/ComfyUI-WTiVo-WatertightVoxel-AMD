@@ -1,4 +1,4 @@
-Historical upstream documentation. NVIDIA binary installation instructions do not apply to this AMD source branch. Use the root README and AMD_PORT.md.
+Historical upstream documentation. NVIDIA binary installation instructions do not apply to this AMD source branch. Use the root README and COMFYUI_ROCM_BUILD_GUIDE.md.
 
 # WTiVo — WatertightVoxel (ComfyUI Node)
 

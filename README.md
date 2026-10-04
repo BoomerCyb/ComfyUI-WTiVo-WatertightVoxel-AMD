@@ -281,6 +281,10 @@ This makes WTiVo useful as a preprocessing stage for:
 
 ## AMD Edition Changes - 2026-10-03
 
+GPU runtime calls use HIP. Device guards and synchronization are retained.
+The empty graph return and owned tetrahedralization vertex fixes are preserved.
+CPU modules continue to use CGAL, Eigen, oneTBB and OpenVDB.
+
 - Uses ComfyUI's Python and reports installation failures before restarting.
 - Builds native HIP extensions for the active ROCm environment; matching HIP SDK and Visual Studio C++ Build Tools are required.
 - Supports group installation through [ComfyUI-Easy-Install-AMD](https://github.com/BoomerCyb/ComfyUI-Easy-Install-AMD).
