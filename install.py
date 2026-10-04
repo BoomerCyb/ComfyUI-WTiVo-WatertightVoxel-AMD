@@ -158,6 +158,7 @@ def _install(env):
         shutil.copy2(dll, NODE_DIR / "build" / dll.name)
     _run([sys.executable, "scripts/build_gpupr_hip.py"], env)
     _run([sys.executable, "scripts/verify_hip_graph.py"], env)
+    _run([sys.executable, "wtivo.py", "--help"], env)
 
 
 def main():

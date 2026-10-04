@@ -28,8 +28,9 @@ builds the native backends and validates their imports. Run install.py --check
 with ComfyUI's Python to check the runtime and compiler without installation.
 Installation integrations may invoke install.py directly; the batch filename
 alone does not cause automatic execution. __init__.py does not compile code. WTiVo also requires
-VCPKG_ROOT and its CPU dependencies; VCPKG_INSTALLED_DIR may select an existing
-manifest install tree. Bake Forger does not need native compilation. Native installers use PyTorch's HIP device properties to target discrete GPUs
+its vcpkg CPU dependencies, which install.py now downloads/builds automatically
+under .deps/vcpkg_installed before CMake. A complete vcpkg checkout is reused or
+bootstrapped locally. Bake Forger does not need native compilation. Native installers use PyTorch's HIP device properties to target discrete GPUs
 by default, excluding integrated GPUs when a discrete GPU is visible. Multiple
 discrete architectures are included once each. An explicit PYTORCH_ROCM_ARCH
 setting takes precedence. Integrated-only systems target their integrated GPUs;
