@@ -120,7 +120,12 @@ def _install_cpu_dependencies(env):
             raise RuntimeError('Incomplete vcpkg checkout at '+str(root)+'. Preserve it and repair the checkout before retrying.')
     executable = root/'vcpkg.exe'
     if not executable.is_file():
-        _run(['cmd.exe','/d','/c','call "'+str(root/'bootstrap-vcpkg.bat')+'" -disableMetrics'],env)
+        # Run from the checkout so cmd receives no quoted absolute batch path.
+        # Python's list quoting would otherwise turn embedded quotes into \".
+        command = [shutil.which('cmd.exe',path=env.get('PATH')) or 'cmd.exe',
+                   '/d','/c','call bootstrap-vcpkg.bat -disableMetrics']
+        print('[Installer]',subprocess.list2cmdline(command),flush=True)
+        subprocess.check_call(command,cwd=root,env=env)
     installed = NODE_DIR / '.deps/vcpkg_installed'
     work = NODE_DIR / '.deps/vcpkg-work'
     work.mkdir(parents=True,exist_ok=True)
