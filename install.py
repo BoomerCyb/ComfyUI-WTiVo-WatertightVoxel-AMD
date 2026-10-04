@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import sysconfig
 
 
 NODE_DIR = Path(__file__).resolve().parent
@@ -56,6 +57,10 @@ def _gpu_build_architectures(env, torch):
 def _native_environment():
     if os.name != "nt":
         raise RuntimeError("This native build currently supports Windows x64.")
+    include = Path(sysconfig.get_paths()['include']) / 'Python.h'
+    library = Path(sys.base_prefix) / 'libs' / ('python'+str(sys.version_info.major)+str(sys.version_info.minor)+'.lib')
+    if not include.is_file() or not library.is_file():
+        raise RuntimeError('ComfyUI Python development files are missing: '+str(include)+' or '+str(library)+'. Native compilation needs matching Python headers and the import library.')
     env = {key.upper(): value for key, value in os.environ.items()}
     sdk = env.get("ROCM_HOME") or env.get("HIP_PATH") or env.get("ROCM_PATH")
     if not sdk:
@@ -142,7 +147,7 @@ def _install_cpu_dependencies(env):
 def _install(env):
     env = env.copy()
     vcpkg, installed = _install_cpu_dependencies(env)
-    _run([sys.executable, "-m", "pip", "install", "-r", "requirements-runtime.txt", "-r", "requirements-build.txt"], env)
+    _run([sys.executable, "-m", "pip", "install", "--no-build-isolation", "-r", "requirements-runtime.txt", "-r", "requirements-build.txt"], env)
     pybind = subprocess.check_output([sys.executable, "-m", "pybind11", "--cmakedir"], text=True, env=env).strip()
     _run(["cmake", "-S", ".", "-B", ".build/cpu", "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_CXX_COMPILER=cl.exe",
@@ -179,7 +184,7 @@ def main():
         print("[Installer] Prerequisites checked; no modules were compiled or installed.")
         return 0
     _install(env)
-    print("[Installer] Installation completed. Restart ComfyUI.")
+    print("[Installer] Installation completed. If installing a node group, wait for all installers before restarting ComfyUI.")
     return 0
 
 
