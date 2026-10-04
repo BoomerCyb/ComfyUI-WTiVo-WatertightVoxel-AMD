@@ -106,16 +106,42 @@ def _native_environment():
     return env
 
 
-def _install(env):
+def _install_cpu_dependencies(env):
     vcpkg = env.get("VCPKG_ROOT")
-    if not vcpkg or not (Path(vcpkg) / "scripts/buildsystems/vcpkg.cmake").is_file():
-        raise RuntimeError("Set VCPKG_ROOT to a vcpkg checkout with the WTiVo CPU dependencies installed.")
-    installed = Path(env.get("VCPKG_INSTALLED_DIR", str(Path(vcpkg) / "installed")))
+    root = Path(vcpkg) if vcpkg else NODE_DIR / '.deps/vcpkg'
+    # Visual Studio's bundled tool may omit the ports registry. Use a complete
+    # node-local checkout in that case rather than writing under Program Files.
+    if not (root/'ports').is_dir() or not (root/'scripts/buildsystems/vcpkg.cmake').is_file():
+        root = NODE_DIR / '.deps/vcpkg'
+        if not root.exists():
+            root.parent.mkdir(parents=True,exist_ok=True)
+            _run(['git','clone','--depth','1','https://github.com/microsoft/vcpkg.git',root],env)
+        if not (root/'ports').is_dir() or not (root/'bootstrap-vcpkg.bat').is_file():
+            raise RuntimeError('Incomplete vcpkg checkout at '+str(root)+'. Preserve it and repair the checkout before retrying.')
+    executable = root/'vcpkg.exe'
+    if not executable.is_file():
+        _run(['cmd.exe','/d','/c','call "'+str(root/'bootstrap-vcpkg.bat')+'" -disableMetrics'],env)
+    installed = NODE_DIR / '.deps/vcpkg_installed'
+    work = NODE_DIR / '.deps/vcpkg-work'
+    work.mkdir(parents=True,exist_ok=True)
+    env['VCPKG_ROOT'] = str(root)
+    env['VCPKG_INSTALLED_DIR'] = str(installed)
+    print('[Installer] Installing Eigen3, CGAL, OpenVDB and TBB from vcpkg.json.',flush=True)
+    _run([executable,'install','--triplet=x64-windows','--host-triplet=x64-windows',
+          '--x-manifest-root='+str(NODE_DIR),'--x-install-root='+str(installed),
+          '--x-buildtrees-root='+str(work/'buildtrees'),
+          '--x-packages-root='+str(work/'packages'),'--downloads-root='+str(work/'downloads')],env)
+    return root,installed
+
+
+def _install(env):
+    env = env.copy()
+    vcpkg, installed = _install_cpu_dependencies(env)
     _run([sys.executable, "-m", "pip", "install", "-r", "requirements-runtime.txt", "-r", "requirements-build.txt"], env)
     pybind = subprocess.check_output([sys.executable, "-m", "pybind11", "--cmakedir"], text=True, env=env).strip()
     _run(["cmake", "-S", ".", "-B", ".build/cpu", "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_CXX_COMPILER=cl.exe",
-          "-DCMAKE_TOOLCHAIN_FILE=" + str(Path(vcpkg) / "scripts/buildsystems/vcpkg.cmake"),
+          "-DCMAKE_TOOLCHAIN_FILE=" + str(vcpkg / "scripts/buildsystems/vcpkg.cmake"),
           "-DVCPKG_MANIFEST_MODE=OFF", "-DVCPKG_INSTALLED_DIR=" + str(installed),
           "-DVCPKG_TARGET_TRIPLET=x64-windows", "-DPython3_EXECUTABLE=" + sys.executable,
           "-Dpybind11_DIR=" + pybind], env)

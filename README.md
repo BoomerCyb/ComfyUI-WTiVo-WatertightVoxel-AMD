@@ -12,6 +12,11 @@ An installed binary still needs to match its GPU target, Python and Torch runtim
 Hardware support depends on ROCm/PyTorch; validation here covers RX 9070 XT.
 
 Run `install_requirements.bat` with ComfyUI closed to build/install the native components.
+The installer first installs Eigen3, CGAL, OpenVDB and TBB from `vcpkg.json`
+into this node's `.deps/vcpkg_installed` folder, then builds against that same folder.
+It uses a complete existing vcpkg checkout or downloads and bootstraps a local one.
+The first dependency build can take considerable time. The matching HIP SDK and
+Visual Studio C++ Build Tools/Windows SDK are still required.
 For prerequisites and manual commands, see [COMFYUI_ROCM_BUILD_GUIDE.md](COMFYUI_ROCM_BUILD_GUIDE.md).
 
 ComfyUI ROCm setup: [patientx-cfz/comfyui-rocm](https://github.com/patientx-cfz/comfyui-rocm).
