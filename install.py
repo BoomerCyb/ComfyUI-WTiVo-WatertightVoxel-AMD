@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from scripts.build_cache import file_identity, tree_identity, cache_directory
 
 
 NODE_DIR = Path(__file__).resolve().parent
@@ -149,13 +151,29 @@ def _install(env):
     vcpkg, installed = _install_cpu_dependencies(env)
     _run([sys.executable, "-m", "pip", "install", "--no-build-isolation", "-r", "requirements-runtime.txt", "-r", "requirements-build.txt"], env)
     pybind = subprocess.check_output([sys.executable, "-m", "pybind11", "--cmakedir"], text=True, env=env).strip()
-    _run(["cmake", "-S", ".", "-B", ".build/cpu", "-G", "Ninja",
+    # A compiler upgraded in place must not inherit objects from an older run.
+    cpu_identity = dict(python=sys.version, executable=sys.executable,
+                        compiler=file_identity(shutil.which('cl.exe', path=env['PATH'])),
+                        linker=file_identity(shutil.which('link.exe', path=env['PATH'])),
+                        cmake=file_identity(shutil.which('cmake.exe', path=env['PATH'])),
+                        python_headers=tree_identity(Path(sys.base_prefix) / 'Include'),
+                        python_library=file_identity(Path(sys.base_prefix) / 'libs/python312.lib'),
+                        pybind=tree_identity(Path(pybind).parents[2] / 'include'),
+                        dependencies=tree_identity(installed / 'x64-windows'),
+                        toolchain=file_identity(vcpkg / 'scripts/buildsystems/vcpkg.cmake'),
+                        cmake_source=file_identity(NODE_DIR / 'CMakeLists.txt'),
+                        sources=tree_identity(NODE_DIR / 'native'),
+                        configuration='Release',
+                        flags={key: env.get(key, '') for key in ('CL', '_CL_', 'LINK', 'CXXFLAGS', 'CFLAGS', 'LDFLAGS', 'INCLUDE', 'LIB')})
+    cpu_build = cache_directory(NODE_DIR / '.build/cpu', cpu_identity)
+    print('[Installer] CPU Build Cache:', cpu_build, flush=True)
+    _run(["cmake", "-S", ".", "-B", cpu_build, "-G", "Ninja",
           "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_CXX_COMPILER=cl.exe",
           "-DCMAKE_TOOLCHAIN_FILE=" + str(vcpkg / "scripts/buildsystems/vcpkg.cmake"),
           "-DVCPKG_MANIFEST_MODE=OFF", "-DVCPKG_INSTALLED_DIR=" + str(installed),
           "-DVCPKG_TARGET_TRIPLET=x64-windows", "-DPython3_EXECUTABLE=" + sys.executable,
           "-Dpybind11_DIR=" + pybind], env)
-    _run(["cmake", "--build", ".build/cpu", "--target", "wtivo_core", "wtivo_vdb", "--parallel", env["MAX_JOBS"]], env)
+    _run(["cmake", "--build", cpu_build, "--target", "wtivo_core", "wtivo_vdb", "--parallel", env["MAX_JOBS"]], env)
     dlls = list((installed / "x64-windows/bin").glob("*.dll"))
     if not dlls:
         raise RuntimeError("WTiVo CPU dependency DLLs were not found in the vcpkg installation.")
