@@ -20,6 +20,8 @@
 namespace {
 
 constexpr int TPB = 256;
+constexpr int BFS_BATCH = 64;          // BFS levels queued per host round trip
+constexpr std::uint64_t BFS_MAX_BLOCKS = 1024;
 
 inline void ck(hipError_t e, const char* where) {
     if (e == hipSuccess) return;
@@ -39,6 +41,9 @@ __device__ __forceinline__ long long atomic_load_ll(long long* addr) {
 }
 __device__ __forceinline__ std::uint32_t atomic_load_u32(std::uint32_t* addr) {
     return atomicAdd(addr, 0u);
+}
+__device__ __forceinline__ std::uint32_t relaxed_load_u32(const std::uint32_t* addr) {
+    return __hip_atomic_load(addr, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_AGENT);
 }
 __device__ __forceinline__ std::uint32_t reserve_residual(
     std::uint32_t* addr, unsigned long long want)
@@ -101,40 +106,47 @@ __global__ void seed_sink_bfs(
     }
 }
 
-__global__ void bfs_expand(
-    std::uint32_t frontier_count,
+// Grid-stride BFS level whose frontier size is read from device memory, so
+// consecutive levels can be queued without a host round trip.
+__global__ void bfs_expand_levels(
+    const std::uint32_t* frontier_count,
     const std::uint32_t* frontier,
     std::uint32_t* next,
     std::uint32_t* next_count,
     const std::int32_t* __restrict__ nbr,
-    std::uint32_t* residual,
+    const std::uint32_t* __restrict__ residual,
     std::uint32_t* height,
     std::uint32_t sentinel,
     int* error)
 {
-    const std::uint32_t idx = blockIdx.x*blockDim.x + threadIdx.x;
-    if (idx >= frontier_count) return;
-    const std::uint32_t u = frontier[idx];
-    const std::uint32_t hu = atomic_load_u32(&height[u]);
-    if (hu == sentinel) return;
+    const std::uint32_t count = *frontier_count;
+    const std::uint32_t stride = gridDim.x*blockDim.x;
+    for (std::uint32_t idx = blockIdx.x*blockDim.x + threadIdx.x;
+         idx < count; idx += stride)
+    {
+        const std::uint32_t u = frontier[idx];
+        const std::uint32_t hu = relaxed_load_u32(&height[u]);
+        if (hu == sentinel) continue;
 
-    const std::size_t ub = static_cast<std::size_t>(u)*4u;
+        const std::size_t ub = static_cast<std::size_t>(u)*4u;
 #pragma unroll
-    for (int ku=0; ku<4; ++ku) {
-        const std::int32_t vv = nbr[ub+ku];
-        if (vv < 0) continue;
-        const std::uint32_t v = static_cast<std::uint32_t>(vv);
-        if (atomic_load_u32(&height[v]) != sentinel) continue;
+        for (int ku=0; ku<4; ++ku) {
+            const std::int32_t vv = nbr[ub+ku];
+            if (vv < 0) continue;
+            const std::uint32_t v = static_cast<std::uint32_t>(vv);
+            if (relaxed_load_u32(&height[v]) != sentinel) continue;
 
-        const int kv = reverse_slot(nbr, v, u);
-        if (kv < 0) { atomicExch(error, 2); continue; }
-        const std::size_t ve = static_cast<std::size_t>(v)*4u +
-                               static_cast<std::size_t>(kv);
-        if (atomic_load_u32(&residual[ve]) == 0u) continue;
+            const int kv = reverse_slot(nbr, v, u);
+            if (kv < 0) { atomicExch(error, 2); continue; }
+            // Residuals are not written while a global relabel runs.
+            const std::size_t ve = static_cast<std::size_t>(v)*4u +
+                                   static_cast<std::size_t>(kv);
+            if (residual[ve] == 0u) continue;
 
-        if (atomicCAS(&height[v], sentinel, hu+1u) == sentinel) {
-            const std::uint32_t p = atomicAdd(next_count, 1u);
-            next[p] = v;
+            if (atomicCAS(&height[v], sentinel, hu+1u) == sentinel) {
+                const std::uint32_t p = atomicAdd(next_count, 1u);
+                next[p] = v;
+            }
         }
     }
 }
@@ -332,6 +344,7 @@ struct Workspace {
     std::uint32_t* queued=nullptr;
     std::uint32_t* c0=nullptr;
     std::uint32_t* c1=nullptr;
+    std::uint32_t* levels=nullptr;
     int* error=nullptr;
     unsigned long long* flow=nullptr;
     ~Workspace() {
@@ -342,6 +355,7 @@ struct Workspace {
         if(queued) hipFree(queued);
         if(c0) hipFree(c0);
         if(c1) hipFree(c1);
+        if(levels) hipFree(levels);
         if(error) hipFree(error);
         if(flow) hipFree(flow);
     }
@@ -358,6 +372,15 @@ void check_err(int* d, const char* stage) {
     }
 }
 
+struct RelabelProfile {
+    std::uint64_t calls=0;
+    std::uint64_t levels=0;
+    std::uint64_t last_levels=0;
+    std::uint64_t max_levels=0;
+    double seconds=0.0;
+    double last_seconds=0.0;
+};
+
 void global_relabel(
     std::uint32_t n,
     const std::int32_t* nbr,
@@ -369,8 +392,11 @@ void global_relabel(
     std::uint32_t*& next,
     std::uint32_t* c0,
     std::uint32_t* c1,
-    int* error)
+    std::uint32_t* level_counts,
+    int* error,
+    RelabelProfile& prof)
 {
+    const auto t0=std::chrono::steady_clock::now();
     const std::uint32_t sentinel = 0xFFFFFFFFu;
     ck(hipMemset(height,0xFF,static_cast<std::size_t>(n)*sizeof(std::uint32_t)),
        "global height memset");
@@ -383,16 +409,29 @@ void global_relabel(
     ck(hipMemcpy(&count,c0,sizeof(count),hipMemcpyDeviceToHost),"seed count");
     std::uint64_t depth=1;
 
+    // Queue BFS_BATCH levels per host round trip. Each level reads its frontier
+    // size from device memory, so the host only checks for an empty frontier
+    // once per batch. Levels after the frontier empties exit immediately.
+    std::uint32_t h_counts[BFS_BATCH+1];
+    const int lb = static_cast<int>(std::min<std::uint64_t>(
+        (static_cast<std::uint64_t>(n)+TPB-1)/TPB, BFS_MAX_BLOCKS));
     while(count) {
-        ck(hipMemset(c1,0,sizeof(std::uint32_t)),"bfs next count");
-        const int fb = static_cast<int>((static_cast<std::uint64_t>(count)+TPB-1)/TPB);
-        bfs_expand<<<fb,TPB>>>(
-            count,frontier,next,c1,nbr,residual,height,sentinel,error);
+        h_counts[0]=count;
+        std::fill(h_counts+1,h_counts+BFS_BATCH+1,0u);
+        ck(hipMemcpy(level_counts,h_counts,sizeof(h_counts),hipMemcpyHostToDevice),
+           "bfs level counts");
+        for (int j=0; j<BFS_BATCH; ++j) {
+            bfs_expand_levels<<<lb,TPB>>>(
+                level_counts+j,frontier,next,level_counts+j+1,
+                nbr,residual,height,sentinel,error);
+            std::swap(frontier,next);
+        }
         ck(hipGetLastError(),"bfs expand");
-        ck(hipMemcpy(&count,c1,sizeof(count),hipMemcpyDeviceToHost),"bfs count");
-        std::swap(frontier,next);
-        std::swap(c0,c1);
-        if (++depth > static_cast<std::uint64_t>(n)+1ULL)
+        ck(hipMemcpy(h_counts+1,level_counts+1,BFS_BATCH*sizeof(std::uint32_t),
+                     hipMemcpyDeviceToHost),"bfs counts");
+        for (int j=0; j<BFS_BATCH && h_counts[j]; ++j) ++depth;
+        count=h_counts[BFS_BATCH];
+        if (depth > static_cast<std::uint64_t>(n)+1ULL)
             throw std::runtime_error("GPUPr-FAST-v6.30 BFS exceeded n+1 levels");
     }
 
@@ -400,6 +439,13 @@ void global_relabel(
     ck(hipGetLastError(),"normalize");
     ck(hipDeviceSynchronize(),"global relabel sync");
     check_err(error,"global relabel");
+
+    prof.last_seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
+    prof.last_levels=depth;
+    prof.seconds+=prof.last_seconds;
+    prof.levels+=depth;
+    prof.max_levels=std::max(prof.max_levels,depth);
+    ++prof.calls;
 }
 
 } // namespace
@@ -430,6 +476,7 @@ CellocutGpuPRFastStats cellocut_gpu_push_relabel_fast(
     const int blocks=static_cast<int>((static_cast<std::uint64_t>(n)+TPB-1)/TPB);
 
     Workspace w;
+    RelabelProfile prof;
     ck(hipMalloc(reinterpret_cast<void**>(&w.height),N*sizeof(std::uint32_t)),"malloc height");
     ck(hipMalloc(reinterpret_cast<void**>(&w.excess),N*sizeof(long long)),"malloc excess");
     ck(hipMalloc(reinterpret_cast<void**>(&w.q0),N*sizeof(std::uint32_t)),"malloc q0");
@@ -437,6 +484,8 @@ CellocutGpuPRFastStats cellocut_gpu_push_relabel_fast(
     ck(hipMalloc(reinterpret_cast<void**>(&w.queued),N*sizeof(std::uint32_t)),"malloc queued");
     ck(hipMalloc(reinterpret_cast<void**>(&w.c0),sizeof(std::uint32_t)),"malloc c0");
     ck(hipMalloc(reinterpret_cast<void**>(&w.c1),sizeof(std::uint32_t)),"malloc c1");
+    ck(hipMalloc(reinterpret_cast<void**>(&w.levels),(BFS_BATCH+1)*sizeof(std::uint32_t)),
+       "malloc bfs levels");
     ck(hipMalloc(reinterpret_cast<void**>(&w.error),sizeof(int)),"malloc error");
     ck(hipMalloc(reinterpret_cast<void**>(&w.flow),sizeof(unsigned long long)),"malloc flow");
 
@@ -458,7 +507,7 @@ CellocutGpuPRFastStats cellocut_gpu_push_relabel_fast(
 
     global_relabel(
         n,d_neighbors,d_residual,d_terminal,w.height,inf_h,
-        current,next,current_count_dev,next_count_dev,w.error);
+        current,next,current_count_dev,next_count_dev,w.levels,w.error,prof);
     ++st.global_relabels;
 
     ck(hipMemset(w.queued,0,N*sizeof(std::uint32_t)),"active queued");
@@ -515,7 +564,7 @@ CellocutGpuPRFastStats cellocut_gpu_push_relabel_fast(
         {
             global_relabel(
                 n,d_neighbors,d_residual,d_terminal,w.height,inf_h,
-                current,next,current_count_dev,next_count_dev,w.error);
+                current,next,current_count_dev,next_count_dev,w.levels,w.error,prof);
             ++st.global_relabels;
 
             ck(hipMemset(w.queued,0,N*sizeof(std::uint32_t)),"periodic queued");
@@ -533,6 +582,9 @@ CellocutGpuPRFastStats cellocut_gpu_push_relabel_fast(
               << " | old_round_equiv~=" << st.rounds*static_cast<std::uint64_t>(local_steps)
               << " | active=" << current_count
               << " | elapsed=" << elapsed << "s"
+              << " | relabel_levels=" << prof.last_levels
+              << " | relabel_ms=" << prof.last_seconds*1000.0
+              << " | cumulative_relabel_seconds=" << prof.seconds
               << std::endl;
         }
 
@@ -552,9 +604,16 @@ CellocutGpuPRFastStats cellocut_gpu_push_relabel_fast(
     const auto fr0=Clock::now();
     global_relabel(
         n,d_neighbors,d_residual,d_terminal,w.height,inf_h,
-        current,next,current_count_dev,next_count_dev,w.error);
+        current,next,current_count_dev,next_count_dev,w.levels,w.error,prof);
     ++st.global_relabels;
     st.final_relabel_seconds=std::chrono::duration<double>(Clock::now()-fr0).count();
+    std::cout
+      << "[GPUPr-FAST-v6.30] relabel profile | calls=" << prof.calls
+      << " | total_levels=" << prof.levels
+      << " | max_levels=" << prof.max_levels
+      << " | final_levels=" << prof.last_levels
+      << " | total_seconds=" << prof.seconds
+      << std::endl;
 
     std::uint8_t* d_partition=reinterpret_cast<std::uint8_t*>(w.q0);
     partition_kernel<<<blocks,TPB>>>(n,w.height,inf_h,d_partition);
