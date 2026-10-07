@@ -146,6 +146,30 @@ def _install_cpu_dependencies(env):
     return root,installed
 
 
+def _snapshot_build():
+    """Back up the installed modules so a failed install can be undone."""
+    build = NODE_DIR / "build"
+    backup = NODE_DIR / ".build" / "installed-backup"
+    shutil.rmtree(backup, ignore_errors=True)
+    if build.is_dir():
+        # Windows keeps a loaded .pyd locked; replacing it would fail half-way.
+        for module in build.glob("*.pyd"):
+            try:
+                with open(module, "r+b"):
+                    pass
+            except PermissionError:
+                raise RuntimeError(str(module) + " is in use. Close ComfyUI, then run the installer again.")
+        shutil.copytree(build, backup)
+    return backup
+
+
+def _restore_build(backup):
+    build = NODE_DIR / "build"
+    shutil.rmtree(build, ignore_errors=True)
+    if backup.is_dir():
+        shutil.copytree(backup, build)
+
+
 def _install(env):
     env = env.copy()
     vcpkg, installed = _install_cpu_dependencies(env)
@@ -201,7 +225,13 @@ def main():
     if args.check:
         print("[Installer] Prerequisites checked; no modules were compiled or installed.")
         return 0
-    _install(env)
+    backup = _snapshot_build()
+    try:
+        _install(env)
+    except BaseException:
+        print("[Installer] Installation failed; restoring the previously installed modules.", flush=True)
+        _restore_build(backup)
+        raise
     print("[Installer] Installation completed. If installing a node group, wait for all installers before restarting ComfyUI.")
     return 0
 
