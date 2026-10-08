@@ -173,8 +173,10 @@ def _install_cpu_dependencies(env):
     if not executable.is_file():
         # Run from the checkout so cmd receives no quoted absolute batch path.
         # Python's list quoting would otherwise turn embedded quotes into \".
+        # .\ keeps it working when Windows is set not to search the current
+        # folder for programs (NoDefaultCurrentDirectoryInExePath).
         command = [shutil.which('cmd.exe',path=env.get('PATH')) or 'cmd.exe',
-                   '/d','/c','call bootstrap-vcpkg.bat -disableMetrics']
+                   '/d','/c','call .\\bootstrap-vcpkg.bat -disableMetrics']
         print('[Installer]',subprocess.list2cmdline(command),flush=True)
         subprocess.check_call(command,cwd=root,env=env)
     installed = NODE_DIR / '.deps/vcpkg_installed'
