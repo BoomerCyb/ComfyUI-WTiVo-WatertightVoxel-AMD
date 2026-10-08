@@ -56,6 +56,16 @@ def _gpu_build_architectures(env, torch):
     print("[Installer] GPU build architectures:", env["PYTORCH_ROCM_ARCH"])
 
 
+def _default_jobs():
+    """Parallel compile jobs: half the logical CPUs, at most one per 2.5 GB of free RAM, 2-16."""
+    try:
+        import psutil
+        ram_jobs = int(psutil.virtual_memory().available / (2.5 * 1024**3))
+    except Exception:
+        return 2
+    return max(2, min((os.cpu_count() or 4) // 2, ram_jobs, 16))
+
+
 def _native_environment():
     if os.name != "nt":
         raise RuntimeError("This native build currently supports Windows x64.")
@@ -106,7 +116,7 @@ def _native_environment():
     env["CXX"] = str(Path(sdk) / "lib/llvm/bin/clang-cl.exe")
     env["DISTUTILS_USE_SDK"] = "1"
     env["MSSDK"] = "1"
-    env.setdefault("MAX_JOBS", "2")
+    env.setdefault("MAX_JOBS", str(_default_jobs()))
     for tool in ("cl.exe", "ninja.exe", "cmake.exe"):
         if not shutil.which(tool, path=env["PATH"]):
             raise RuntimeError("Required build tool is missing: " + tool)
