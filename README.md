@@ -1,6 +1,8 @@
 # ComfyUI-WTiVo-WatertightVoxel-AMD
 
-> **First installation requires a build process.** The installer compiles native components using the Python, PyTorch, ROCm/HIP environment and AMD GPU architecture used by ComfyUI. This can take several minutes, especially when dependencies also need to be built. Downloading or extracting the repository alone does not complete installation. Run `install_requirements.bat`, or let ComfyUI-Easy-Install-AMD run it automatically, and wait for installation to finish successfully before restarting ComfyUI.
+> **Through [ComfyUI-Easy-Install-AMD](https://github.com/BoomerCyb/ComfyUI-Easy-Install-AMD), no build tools are needed** when it has prebuilt native modules for your setup (its default PyTorch bundle on a Radeon RX 5000 to RX 9000 series GPU or Ryzen integrated graphics): they install in seconds and are tested on your GPU.
+>
+> **Otherwise the first installation requires a build process.** The installer compiles native components using the Python, PyTorch, ROCm/HIP environment and AMD GPU architecture used by ComfyUI. This can take several minutes, especially when dependencies also need to be built. Downloading or extracting the repository alone does not complete installation. Run `install_requirements.bat`, or let ComfyUI-Easy-Install-AMD run it automatically, and wait for installation to finish successfully before restarting ComfyUI.
 
 ## AMD / ROCm
 
@@ -20,7 +22,7 @@ The installer first installs Eigen3, CGAL, OpenVDB and TBB from `vcpkg.json`
 into this node's `.deps/vcpkg_installed` folder, then builds against that same folder.
 It uses a complete existing vcpkg checkout or downloads and bootstraps a local one.
 The first dependency build can take considerable time. The matching HIP SDK and
-Visual Studio C++ Build Tools/Windows SDK are still required.
+Visual Studio C++ Build Tools/Windows SDK are required to build from source (not for prebuilt modules installed by ComfyUI-Easy-Install-AMD).
 For prerequisites and manual commands, see [docs/AMD_BUILD.md](docs/AMD_BUILD.md).
 
 ComfyUI AMD installer: [BoomerCyb/ComfyUI-Easy-Install-AMD](https://github.com/BoomerCyb/ComfyUI-Easy-Install-AMD).
@@ -122,7 +124,7 @@ If your GPU has enough VRAM, increasing the number of proxy points can provide t
 
 ### ComfyUI-Easy-Install-AMD
 
-In [ComfyUI-Easy-Install-AMD](https://github.com/BoomerCyb/ComfyUI-Easy-Install-AMD), select **Easy Menu → Add-ons → BoomerCyb WTiVo AMD Nodes**. It downloads the nodes and runs their installers automatically. You do not need to run `install_requirements.bat` separately. Wait for all five nodes to finish; EZi restarts ComfyUI after the group completes successfully.
+In [ComfyUI-Easy-Install-AMD](https://github.com/BoomerCyb/ComfyUI-Easy-Install-AMD), select **Easy Menu → Add-ons → BoomerCyb WTiVo AMD Nodes**. It downloads the nodes and installs their prebuilt native modules when available for your PyTorch and GPU (no compiler needed), otherwise runs their installers to build them. You do not need to run `install_requirements.bat` separately. Wait for all five nodes to finish; EZi restarts ComfyUI after the group completes successfully.
 
 ### Manual installation
 
