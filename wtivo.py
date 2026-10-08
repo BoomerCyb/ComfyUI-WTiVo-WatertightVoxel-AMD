@@ -14,6 +14,7 @@ import importlib.util
 import ctypes
 import os
 import gc
+import json
 import sys
 import time
 from pathlib import Path
@@ -66,15 +67,20 @@ if os.name == "nt" and hasattr(os, "add_dll_directory"):
         torch_lib,
         ROOT / ".deps" / "vcpkg" / "installed" / "x64-windows" / "bin",
     ]
-    for key in ("HIP_PATH", "ROCM_PATH", "ROCM_HOME", "CUDA_PATH", "CUDA_HOME"):
-        value = os.environ.get(key)
-        if value:
-            candidates.append(Path(value) / "bin")
-    # TheRock SDK wheels can live outside the interpreter's directory.
-    for package in ("_rocm_sdk_core", "_rocm_sdk_devel"):
+    # The ROCm SDK installed with PyTorch (TheRock wheels) matches the HIP
+    # runtime the modules were built against; system SDK variables are only a
+    # fallback, since HIP_PATH can name another HIP version.
+    sdk_bins = []
+    for package in ("_rocm_sdk_devel", "_rocm_sdk_core"):
         spec = importlib.util.find_spec(package)
         if spec and spec.origin:
-            candidates.append(Path(spec.origin).parent / "bin")
+            sdk_bins.append(Path(spec.origin).parent / "bin")
+    candidates += sdk_bins
+    if not sdk_bins:
+        for key in ("ROCM_HOME", "HIP_PATH", "ROCM_PATH", "CUDA_PATH", "CUDA_HOME"):
+            value = os.environ.get(key)
+            if value:
+                candidates.append(Path(value) / "bin")
     for d in candidates:
         try:
             if d.exists():
@@ -91,6 +97,31 @@ import numpy as np
 import torch
 import trimesh
 
+
+def _native_build_problem():
+    """Why the HIP modules in build/ cannot be loaded safely, or None.
+
+    Read before importing: a native module built for another PyTorch can crash
+    the process instead of raising an ImportError.
+    """
+    try:
+        built = json.loads((ROOT / "build" / "hip-build-info.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None  # no build record (older build, or not built yet)
+    rebuild = " Run install_requirements.bat in the WTiVo node folder, then restart ComfyUI."
+    if built.get("torch") and built["torch"] != torch.__version__:
+        return f"WTiVo was built for PyTorch {built['torch']}, but ComfyUI now runs {torch.__version__}." + rebuild
+    architectures = [arch for arch in built.get("architectures", "").split(";") if arch]
+    if architectures and torch.cuda.is_available():
+        current = torch.cuda.get_device_properties(torch.cuda.current_device()).gcnArchName.split(":")[0]
+        if current not in architectures:
+            return f"WTiVo was built for {', '.join(architectures)}, but this GPU is {current}." + rebuild
+    return None
+
+
+if torch.version.hip is not None and (_build_problem := _native_build_problem()):
+    raise ImportError(_build_problem)
+
 # Use the native modules built for the active Python/ROCm environment.
 _BACKEND_NAME = "native-wtivo"
 try:
@@ -103,8 +134,8 @@ except (ImportError, OSError) as _wtivo_native_error:
             "WTiVo native HIP backend is unavailable. Build matching wtivo_core, "
             "wtivo_gpupr and wtivo_vdb modules for this Python/ROCm environment. "
             "The bundled CelloCut GPU binary requires NVIDIA CUDA and cannot be "
-            "used as a native ROCm fallback. Build scripts/build_gpupr_hip.py against the active ROCm interpreter; "
-            "see COMFYUI_ROCM_BUILD_GUIDE.md. Native import error: "
+            "used as a native ROCm fallback. Run install_requirements.bat in the WTiVo node folder "
+            "with ComfyUI's Python; see docs/AMD_BUILD.md. Native import error: "
             f"{_wtivo_native_error!r}"
         ) from _wtivo_native_error
     try:

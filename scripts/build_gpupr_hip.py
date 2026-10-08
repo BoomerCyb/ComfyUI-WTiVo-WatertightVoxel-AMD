@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Build the HIP solver with the user's existing Windows ROCm interpreter."""
 from __future__ import annotations
-import importlib.util, json, os, shutil, sys
+import json, os, shutil, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_cache import file_identity, tree_identity, cache_directory
@@ -14,15 +14,10 @@ def main():
         raise SystemExit('Use your ROCm Torch interpreter; NVIDIA/CPU Torch is unsupported by this builder.')
     if not torch.cuda.is_available():
         raise SystemExit('ROCm Torch cannot see the GPU.')
-    sdk = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH') or os.environ.get('HIP_PATH')
-    if not sdk:
-        for name in ('_rocm_sdk_core', '_rocm_sdk_devel'):
-            spec = importlib.util.find_spec(name)
-            if spec and spec.origin:
-                sdk = str(Path(spec.origin).parent)
-                break
-    if not sdk:
-        raise SystemExit('Initialize the matching ROCm SDK through your existing ComfyUI launcher first.')
+    # Same SDK choice as install.py: the SDK installed with PyTorch first.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from install import _rocm_sdk
+    sdk = _rocm_sdk({key.upper(): value for key, value in os.environ.items()})
     os.environ['ROCM_HOME'] = sdk
     os.environ['HIP_PATH'] = sdk
     os.environ.setdefault('MAX_JOBS', '2')
@@ -48,7 +43,10 @@ def main():
                     hipcc=file_identity(Path(sdk) / 'bin/hipcc.exe'),
                     compiler_driver=file_identity(Path(sdk) / 'lib/llvm/bin/clang.exe'),
                     torch_headers=tree_identity(Path(torch.__file__).parent / 'include'),
-                    sdk_headers=tree_identity(Path(sdk) / 'include'),
+                    # Only the HIP headers reach this build; the full SDK include tree has thousands of
+                    # unrelated library headers (hashing them took ~11 s).
+                    sdk_headers=tree_identity(Path(sdk) / 'include/hip'),
+                    sdk_version=file_identity(Path(sdk) / 'bin/.hipVersion'),
                     torch_libraries=tree_identity(Path(torch.__file__).parent / 'lib'),
                     hip_library=file_identity(Path(sdk) / 'lib/amdhip64.lib'),
                     linker=file_identity(shutil.which('link.exe')),
