@@ -89,6 +89,18 @@ def process_arrays(
             "--faithc_lambda_d", str(FAITHC_LAMBDA_D),
         ]
         
+        # The solver needs ~10 GiB of VRAM (full topology + reduced graph + workspace).
+        # Anything ComfyUI still holds can push that over the card's budget, and WDDM
+        # then demotes solver arrays to system memory: the same solve that takes
+        # seconds runs for minutes over PCIe. Free our models first, like CuMesh.
+        try:
+            import comfy.model_management as model_management
+            logging.info("[WTiVo] Unloading ComfyUI models to free VRAM for the solver...")
+            model_management.unload_all_models()
+            model_management.soft_empty_cache()
+        except Exception as exc:
+            logging.warning(f"[WTiVo] Could not unload ComfyUI models: {exc}")
+
         logging.info("[WTiVo] Spawning isolated subprocess to prevent native memory leaks...")
         t_all = time.perf_counter()
         
