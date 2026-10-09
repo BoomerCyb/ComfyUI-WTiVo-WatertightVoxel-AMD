@@ -99,6 +99,37 @@ static inline std::int32_t capacity_exact_formula(
     return static_cast<std::int32_t>(cap64);
 }
 
+// The topology tables are only ever streamed through small host chunks, so they
+// may live on the GPU (legacy) or in host RAM. Host tensors keep ~5.4 GiB out of
+// VRAM during the cut; a VRAM over-commit makes WDDM demote the reduced graph to
+// system memory and the solver then runs minutes instead of seconds.
+static void fetch_rows(const std::int32_t* source, bool on_device, std::int32_t* destination,
+                       std::size_t first_value, std::size_t value_count, const char* what)
+{
+    if(on_device)
+        ckcuda(hipMemcpy(destination,source+first_value,value_count*sizeof(std::int32_t),
+                          hipMemcpyDeviceToHost),what);
+    else
+        std::memcpy(destination,source+first_value,value_count*sizeof(std::int32_t));
+}
+
+static bool check_topology_pair(const torch::Tensor& tets,const torch::Tensor& nbr)
+{
+    const bool device=tets.is_cuda();
+    if(tets.is_cuda()!=nbr.is_cuda() || (!device && !tets.is_cpu()))
+        throw std::runtime_error("tets/neighbors must both be HIP or both CPU tensors");
+    if(device && tets.device()!=nbr.device())
+        throw std::runtime_error("tets/neighbors must be on the same HIP device");
+    if(tets.scalar_type()!=torch::kInt32 || nbr.scalar_type()!=torch::kInt32)
+        throw std::runtime_error("tets/neighbors must be int32");
+    if(!tets.is_contiguous() || !nbr.is_contiguous())
+        throw std::runtime_error("tets/neighbors must be contiguous");
+    if(tets.dim()!=2 || nbr.dim()!=2 || tets.size(1)!=4 || nbr.size(1)!=4 ||
+       tets.size(0)!=nbr.size(0))
+        throw std::runtime_error("tets/neighbors must be Nx4 and same N");
+    return device;
+}
+
 static py::tuple graph_cut_gpupr_fast_v630(
     py::array_t<double,py::array::c_style|py::array::forcecast> vertices,
     torch::Tensor tets_cuda,
@@ -115,20 +146,10 @@ static py::tuple graph_cut_gpupr_fast_v630(
 
     if(vertices.ndim()!=2 || vertices.shape(1)!=3)
         throw std::runtime_error("vertices must be float64 Nx3");
-    if(!tets_cuda.is_cuda() || !nbr_cuda.is_cuda())
-        throw std::runtime_error("tets/neighbors must be HIP tensors");
-    if(tets_cuda.scalar_type()!=torch::kInt32 || nbr_cuda.scalar_type()!=torch::kInt32)
-        throw std::runtime_error("tets/neighbors must be int32");
-    if(!tets_cuda.is_contiguous() || !nbr_cuda.is_contiguous())
-        throw std::runtime_error("tets/neighbors must be contiguous");
-    if(tets_cuda.dim()!=2 || nbr_cuda.dim()!=2 ||
-       tets_cuda.size(1)!=4 || nbr_cuda.size(1)!=4 ||
-       tets_cuda.size(0)!=nbr_cuda.size(0))
-        throw std::runtime_error("tets/neighbors must be Nx4 and same N");
+    const bool topo_on_device=check_topology_pair(tets_cuda,nbr_cuda);
 
-    if(tets_cuda.device() != nbr_cuda.device())
-        throw std::runtime_error("tets/neighbors must be on the same HIP device");
-    const c10::DeviceGuard device_guard(tets_cuda.device());
+    c10::OptionalDeviceGuard device_guard;
+    if(topo_on_device) device_guard.reset_device(tets_cuda.device());
     // Complete producer work on any Torch stream before raw HIP pointer reads.
     ckcuda(hipDeviceSynchronize(), "Torch topology producer sync");
 
@@ -153,8 +174,7 @@ static py::tuple graph_cut_gpupr_fast_v630(
 
     for(std::size_t i0=0;i0<N;i0+=CHUNK){
         const std::size_t count=std::min(CHUNK,N-i0);
-        ckcuda(hipMemcpy(hn.data(),dN+i0*4u,count*4u*sizeof(std::int32_t),
-                          hipMemcpyDeviceToHost),"classify nbr D2H");
+        fetch_rows(dN,topo_on_device,hn.data(),i0*4u,count*4u,"classify nbr D2H");
 
         std::vector<std::size_t> lf(threads,0),ls(threads,0),lk(threads,0),lr(threads,0);
         std::atomic<int> bad{0};
@@ -235,10 +255,8 @@ static py::tuple graph_cut_gpupr_fast_v630(
 
     for(std::size_t i0=0;i0<N;i0+=CHUNK){
         const std::size_t count=std::min(CHUNK,N-i0);
-        ckcuda(hipMemcpy(ht.data(),dT+i0*4u,count*4u*sizeof(std::int32_t),
-                          hipMemcpyDeviceToHost),"tets D2H");
-        ckcuda(hipMemcpy(hnb.data(),dN+i0*4u,count*4u*sizeof(std::int32_t),
-                          hipMemcpyDeviceToHost),"nbr D2H");
+        fetch_rows(dT,topo_on_device,ht.data(),i0*4u,count*4u,"tets D2H");
+        fetch_rows(dN,topo_on_device,hnb.data(),i0*4u,count*4u,"nbr D2H");
 
         std::size_t rfirst=std::numeric_limits<std::size_t>::max(),rcount=0;
         for(std::size_t q=0;q<count;++q){
@@ -418,17 +436,10 @@ static py::tuple surface_extraction_topology_cuda(
 
     if(vertices.ndim()!=2 || vertices.shape(1)!=3)
         throw std::runtime_error("vertices must be float64 Nx3");
-    if(!tets_cuda.is_cuda() || !nbr_cuda.is_cuda() ||
-       tets_cuda.scalar_type()!=torch::kInt32 || nbr_cuda.scalar_type()!=torch::kInt32 ||
-       !tets_cuda.is_contiguous() || !nbr_cuda.is_contiguous() ||
-       tets_cuda.dim()!=2 || nbr_cuda.dim()!=2 ||
-       tets_cuda.size(1)!=4 || nbr_cuda.size(1)!=4 ||
-       tets_cuda.size(0)!=nbr_cuda.size(0))
-        throw std::runtime_error("tets/neighbors must be contiguous HIP int32 Nx4 with same N");
+    const bool topo_on_device=check_topology_pair(tets_cuda,nbr_cuda);
 
-    if(tets_cuda.device() != nbr_cuda.device())
-        throw std::runtime_error("tets/neighbors must be on the same HIP device");
-    const c10::DeviceGuard device_guard(tets_cuda.device());
+    c10::OptionalDeviceGuard device_guard;
+    if(topo_on_device) device_guard.reset_device(tets_cuda.device());
     // Complete producer work on any Torch stream before raw HIP pointer reads.
     ckcuda(hipDeviceSynchronize(), "Torch topology producer sync");
 
@@ -452,8 +463,7 @@ static py::tuple surface_extraction_topology_cuda(
     for(std::size_t c=0;c<chunks;++c){
         const std::size_t i0=c*CH;
         const std::size_t count=std::min(CH,N-i0);
-        ckcuda(hipMemcpy(hn.data(),dN+i0*4u,count*4u*sizeof(std::int32_t),
-                          hipMemcpyDeviceToHost),"surface count nbr D2H");
+        fetch_rows(dN,topo_on_device,hn.data(),i0*4u,count*4u,"surface count nbr D2H");
         std::vector<std::size_t> local(static_cast<std::size_t>(threads),0);
         std::atomic<int> bad{0};
         par_chunks(count,threads,[&](std::size_t a,std::size_t b,int tid){
@@ -487,10 +497,8 @@ static py::tuple surface_extraction_topology_cuda(
         const std::size_t i0=c*CH;
         const std::size_t count=std::min(CH,N-i0);
         if(cc[c]==0) continue;
-        ckcuda(hipMemcpy(ht.data(),dT+i0*4u,count*4u*sizeof(std::int32_t),
-                          hipMemcpyDeviceToHost),"surface tets D2H");
-        ckcuda(hipMemcpy(hn.data(),dN+i0*4u,count*4u*sizeof(std::int32_t),
-                          hipMemcpyDeviceToHost),"surface nbr D2H");
+        fetch_rows(dT,topo_on_device,ht.data(),i0*4u,count*4u,"surface tets D2H");
+        fetch_rows(dN,topo_on_device,hn.data(),i0*4u,count*4u,"surface nbr D2H");
 
         std::vector<std::size_t> tc(static_cast<std::size_t>(threads),0),
                                  to(static_cast<std::size_t>(threads),0);

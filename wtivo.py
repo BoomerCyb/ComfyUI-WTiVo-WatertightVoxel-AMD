@@ -446,28 +446,34 @@ def mem_snapshot(tag: str):
 
 
 
-def topology_to_cuda_chunked(host_array, tag: str):
-    """Upload an Nx4 int32 topology matrix to one contiguous CUDA tensor.
+def topology_to_cuda_chunked(host_array, tag: str, device: str = "cpu"):
+    """Repack an Nx4 int32 topology matrix into one contiguous torch tensor.
 
     Eigen/pybind arrays are often Fortran-contiguous.  A direct
     np.ascontiguousarray(host_array) would create another ~0.92 GiB host copy.
     v5.6 repacks only 262k rows at a time (~4 MiB host staging).
+
+    The graph cut and the surface extractor only stream these tables in small
+    host chunks, so they stay in host RAM by default: parked in VRAM they can
+    push the total over the card's budget, and WDDM then demotes the reduced
+    graph to system memory (the GPU solve runs minutes instead of seconds).
     """
     a = np.asarray(host_array)
     if a.ndim != 2 or a.shape[1] != 4:
         raise RuntimeError(f"{tag}: expected Nx4 topology array, got {a.shape}")
     n = int(a.shape[0])
-    out = torch.empty((n, 4), dtype=torch.int32, device="cuda")
+    out = torch.empty((n, 4), dtype=torch.int32, device=device)
     t0 = time.perf_counter()
     for i in range(0, n, TOPO_UPLOAD_CHUNK):
         j = min(n, i + TOPO_UPLOAD_CHUNK)
         h = np.ascontiguousarray(a[i:j], dtype=np.int32)
         out[i:j].copy_(torch.from_numpy(h), non_blocking=False)
         del h
-    torch.cuda.synchronize()
+    if out.is_cuda:
+        torch.cuda.synchronize()
     print(
-        f"[WTiVo-TOPOGPU] {tag} -> VRAM: rows={n:,} | "
-        f"device={_gib(out.numel()*out.element_size()):.3f} GiB | "
+        f"[WTiVo-TOPOGPU] {tag} -> {'VRAM' if out.is_cuda else 'host RAM'}: rows={n:,} | "
+        f"{_gib(out.numel()*out.element_size()):.3f} GiB | "
         f"host staging <=~4 MiB | {time.perf_counter()-t0:.3f}s",
         flush=True,
     )
@@ -1105,13 +1111,25 @@ def main():
     gc.collect()
     compact_host_heap()
     trim_working_set()
-    mem_snapshot("ALL full host topology freed / tets+neighbors GPU-resident")
+    mem_snapshot("ALL full Eigen topology freed / tets+neighbors repacked host-resident")
 
-    # 4. Both full topology tables are already GPU-only.
-    print("[WTiVo-Graph] full topology streamed from VRAM in <=~8 MiB host chunks", flush=True)
+    # 4. Both full topology tables stay in host RAM; the cut and the extractor
+    # stream them in small chunks and the GPU holds only the reduced graph.
+    print("[WTiVo-Graph] full topology streamed in <=~8 MiB host chunks", flush=True)
 
     # 5. Exact CelloCut-compatible graph capacities + WTiVo CUDA multi-discharge scheduling.
     print("Graph cutting (WTiVo exact reduced graph + CUDA multi-discharge)...", flush=True)
+    # Return the chunked-upload and voxel-stage cache to the driver first: the graph
+    # cut allocates ~5 GiB outside torch, and a VRAM over-commit makes WDDM demote
+    # solver arrays to system memory (each global relabel then crawls over PCIe).
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    free_vram, total_vram = torch.cuda.mem_get_info()
+    print(
+        f"[WTiVo-MEM] VRAM before graph cut: free={free_vram / 2**30:.2f}/"
+        f"{total_vram / 2**30:.2f} GiB (torch cache returned)",
+        flush=True,
+    )
     t0 = time.perf_counter()
     mem_snapshot("before GPU graph cut / no full host topology")
     new_labels = gpupr_graph_cut_fast_v630(

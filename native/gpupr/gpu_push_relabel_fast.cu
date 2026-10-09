@@ -397,13 +397,17 @@ void global_relabel(
     RelabelProfile& prof)
 {
     const auto t0=std::chrono::steady_clock::now();
+    const bool trace = std::getenv("WTIVO_RELABEL_TRACE") != nullptr;
+    auto lap=[&]{ return std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count(); };
     const std::uint32_t sentinel = 0xFFFFFFFFu;
     ck(hipMemset(height,0xFF,static_cast<std::size_t>(n)*sizeof(std::uint32_t)),
        "global height memset");
     ck(hipMemset(c0,0,sizeof(std::uint32_t)),"global c0");
+    if (trace) { ck(hipDeviceSynchronize(),"trace memset"); std::cout<<"[RelabelTrace] memset_done="<<lap()<<"\n"; }
     const int blocks = static_cast<int>((static_cast<std::uint64_t>(n)+TPB-1)/TPB);
     seed_sink_bfs<<<blocks,TPB>>>(n,terminal,height,sentinel,frontier,c0);
     ck(hipGetLastError(),"seed bfs");
+    if (trace) { ck(hipDeviceSynchronize(),"trace seed"); std::cout<<"[RelabelTrace] seed_done="<<lap()<<"\n"; }
 
     std::uint32_t count=0;
     ck(hipMemcpy(&count,c0,sizeof(count),hipMemcpyDeviceToHost),"seed count");
@@ -434,11 +438,13 @@ void global_relabel(
         if (depth > static_cast<std::uint64_t>(n)+1ULL)
             throw std::runtime_error("GPUPr-FAST-v6.30 BFS exceeded n+1 levels");
     }
+    if (trace) std::cout<<"[RelabelTrace] loop_done="<<lap()<<" depth="<<depth<<"\n";
 
     normalize_unreached<<<blocks,TPB>>>(n,height,inf_h);
     ck(hipGetLastError(),"normalize");
     ck(hipDeviceSynchronize(),"global relabel sync");
     check_err(error,"global relabel");
+    if (trace) std::cout<<"[RelabelTrace] normalize_done="<<lap()<<"\n";
 
     prof.last_seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-t0).count();
     prof.last_levels=depth;
