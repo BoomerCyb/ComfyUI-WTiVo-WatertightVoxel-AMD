@@ -22,8 +22,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <string>
 #include <limits>
 #include <stdexcept>
 #include <thread>
@@ -363,6 +366,29 @@ static py::tuple graph_cut_gpupr_fast_v630(
       << "s | free nodes=" << free_N
       << " | local_steps=" << local_steps
       << std::endl;
+
+    // Diagnostic only: capture the reduced graph for offline solver benchmarks.
+    if(const char* dump_dir=std::getenv("WTIVO_DUMP_GRAPH")){
+        const std::string dir(dump_dir);
+        auto dump=[&](const char* name,const void* dptr,std::size_t bytes){
+            std::vector<char> host(bytes);
+            ckcuda(hipMemcpy(host.data(),dptr,bytes,hipMemcpyDeviceToHost),"dump D2H");
+            std::ofstream f(dir+"/"+name,std::ios::binary);
+            f.write(host.data(),static_cast<std::streamsize>(bytes));
+            if(!f) throw std::runtime_error(std::string("graph dump write failed: ")+name);
+        };
+        dump("nbr.bin",dg.nbr,free_N*4u*sizeof(std::int32_t));
+        dump("res.bin",dg.res,free_N*4u*sizeof(std::uint32_t));
+        dump("term.bin",dg.term,free_N*sizeof(std::int32_t));
+        std::ofstream meta(dir+"/meta.json");
+        meta << "{\"free_n\": " << free_N
+             << ", \"terminal_base_flow\": " << terminal_base_flow
+             << ", \"global_relabel_period\": " << global_relabel_period
+             << ", \"local_steps\": " << local_steps << "}\n";
+        std::cout << "[GPUPr-FAST-v6.30] reduced graph dumped to " << dir << std::endl;
+        if(std::getenv("WTIVO_DUMP_GRAPH_ONLY"))
+            throw std::runtime_error("WTIVO_DUMP_GRAPH_ONLY: stopping after graph dump");
+    }
 
     std::vector<std::uint8_t> partition(free_N);
     CellocutGpuPRFastStats st;
